@@ -2,6 +2,8 @@
 import { ref, computed, nextTick, onMounted, onUnmounted } from "vue";
 import "./assets/main.css";
 import { conversationsApi, filesApi, workflowsApi } from "./services/api";
+import Sidebar from "./components/Sidebar.vue";
+import Downloader from "./components/Downloader.vue"; // 导入下载器组件
 
 const conversationHistory = ref([]);
 const currentConversationId = ref(null);
@@ -27,6 +29,7 @@ const initialMouseXLeft = ref(0);
 const initialLeftWidth = ref(0);
 const leftSidebarResizeMin = 150;
 const leftSidebarResizeMax = 500;
+let rafLeftResize = null;
 
 const collapsedRightSidebarWidth = 0;
 const defaultOpenRightSidebarWidth = 288;
@@ -38,6 +41,7 @@ const initialMouseXRight = ref(0);
 const initialRightWidth = ref(0);
 const rightSidebarResizeMin = 150;
 const rightSidebarResizeMax = 600;
+let rafRightResize = null;
 
 const isLeftSidebarLogicallyOpen = computed(() => {
   if (!isLargeScreen.value) return isMobileNavOpen.value;
@@ -65,6 +69,7 @@ const currentFileContent = ref("");
 const currentFileName = ref("");
 const showFileContentModal = ref(false);
 const currentFilePath = ref("");
+const currentDirectoryPath = ref(""); // 当前文件浏览路径
 
 const messages = computed(() => {
   if (!currentConversationId.value) return [];
@@ -115,9 +120,9 @@ const selectConversation = async (convId) => {
   }
 };
 
-const newConversation = async () => {
+const newConversation = async (mode = 'chat') => {
   try {
-    const response = await conversationsApi.create();
+    const response = await conversationsApi.create({ mode });
     const newConv = response.data;
     conversationHistory.value.unshift(newConv);
     currentConversationId.value = newConv.id;
@@ -188,7 +193,9 @@ const sendMessage = async () => {
 const loadFiles = async () => {
   try {
     if (!currentConversationId.value) return;
-    const response = await filesApi.getAll(currentConversationId.value);
+    console.log("Loading files for conversation:", currentConversationId.value, "Path:", currentDirectoryPath.value);
+    const response = await filesApi.getAll(currentConversationId.value, currentDirectoryPath.value);
+    console.log("Files loaded:", response.data);
     projectFiles.value = response.data;
   } catch (error) {
     console.error("加载文件失败:", error);
@@ -230,24 +237,37 @@ const startResizeLeft = (event) => {
   if (!isLargeScreen.value) return;
   event.preventDefault();
   isResizingLeft.value = true;
-  initialMouseXLeft.value = event.clientX;
+  initialMouseXLeft.value = event.clientX || event.touches[0].clientX;
   initialLeftWidth.value = leftSidebarWidth.value;
   document.addEventListener("mousemove", doResizeLeft);
   document.addEventListener("mouseup", stopResizeLeft);
+  document.addEventListener("touchmove", doResizeLeft, { passive: true });
+  document.addEventListener("touchend", stopResizeLeft);
   document.body.style.userSelect = "none";
+  document.body.style.cursor = "col-resize"; // 明确设置拖动时的光标
 };
 const doResizeLeft = (event) => {
   if (!isResizingLeft.value) return;
-  const deltaX = event.clientX - initialMouseXLeft.value;
-  let newWidth = initialLeftWidth.value + deltaX;
-  newWidth = Math.max(leftSidebarResizeMin, Math.min(newWidth, leftSidebarResizeMax));
-  leftSidebarWidth.value = newWidth;
+  if (rafLeftResize) cancelAnimationFrame(rafLeftResize);
+  rafLeftResize = requestAnimationFrame(() => {
+    const currentX = event.clientX || (event.touches && event.touches[0].clientX);
+    if (currentX === undefined) return;
+    const deltaX = currentX - initialMouseXLeft.value;
+    let newWidth = initialLeftWidth.value + deltaX;
+    newWidth = Math.max(leftSidebarResizeMin, Math.min(newWidth, leftSidebarResizeMax));
+    leftSidebarWidth.value = newWidth;
+  });
 };
 const stopResizeLeft = () => {
+  if (rafLeftResize) cancelAnimationFrame(rafLeftResize);
+  rafLeftResize = null;
   isResizingLeft.value = false;
   document.removeEventListener("mousemove", doResizeLeft);
   document.removeEventListener("mouseup", stopResizeLeft);
+  document.removeEventListener("touchmove", doResizeLeft);
+  document.removeEventListener("touchend", stopResizeLeft);
   document.body.style.userSelect = "";
+  document.body.style.cursor = ""; // 恢复光标
 };
 
 const toggleFileSidebar = () => {
@@ -278,30 +298,51 @@ const toggleFileSidebar = () => {
     )
       loadFiles();
   }
+  initialMouseXRight.value = event.clientX || event.touches[0].clientX;
+  initialRightWidth.value = rightSidebarWidth.value;
+  document.addEventListener("mousemove", doResizeRight);
+  document.addEventListener("mouseup", stopResizeRight);
+  document.addEventListener("touchmove", doResizeRight, { passive: true });
+  document.addEventListener("touchend", stopResizeRight);
+  document.body.style.userSelect = "none";
+  document.body.style.cursor = "col-resize"; // 明确设置拖动时的光标
 };
 
 const startResizeRight = (event) => {
   if (!isLargeScreen.value) return;
   event.preventDefault();
   isResizingRight.value = true;
-  initialMouseXRight.value = event.clientX;
+  initialMouseXRight.value = event.clientX || event.touches[0].clientX;
   initialRightWidth.value = rightSidebarWidth.value;
   document.addEventListener("mousemove", doResizeRight);
   document.addEventListener("mouseup", stopResizeRight);
+  document.addEventListener("touchmove", doResizeRight, { passive: true });
+  document.addEventListener("touchend", stopResizeRight);
   document.body.style.userSelect = "none";
+  document.body.style.cursor = "col-resize"; // 明确设置拖动时的光标
 };
 const doResizeRight = (event) => {
   if (!isResizingRight.value) return;
-  const deltaX = event.clientX - initialMouseXRight.value;
-  let newWidth = initialRightWidth.value - deltaX;
-  newWidth = Math.max(rightSidebarResizeMin, Math.min(newWidth, rightSidebarResizeMax));
-  rightSidebarWidth.value = newWidth;
+  if (rafRightResize) cancelAnimationFrame(rafRightResize);
+  rafRightResize = requestAnimationFrame(() => {
+    const currentX = event.clientX || (event.touches && event.touches[0].clientX);
+    if (currentX === undefined) return;
+    const deltaX = currentX - initialMouseXRight.value;
+    let newWidth = initialRightWidth.value - deltaX; //注意是减去deltaX因为是从右边拖动
+    newWidth = Math.max(rightSidebarResizeMin, Math.min(newWidth, rightSidebarResizeMax));
+    rightSidebarWidth.value = newWidth;
+  });
 };
 const stopResizeRight = () => {
+  if (rafRightResize) cancelAnimationFrame(rafRightResize);
+  rafRightResize = null;
   isResizingRight.value = false;
   document.removeEventListener("mousemove", doResizeRight);
   document.removeEventListener("mouseup", stopResizeRight);
+  document.removeEventListener("touchmove", doResizeRight);
+  document.removeEventListener("touchend", stopResizeRight);
   document.body.style.userSelect = "";
+  document.body.style.cursor = ""; // 恢复光标
 };
 
 let fileListRefreshInterval = null;
@@ -326,6 +367,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener("resize", updateScreenSize);
   stopFileListRefresh();
+  stopDownloadStatusPolling();
   document.removeEventListener("click", closeDropdownOnClickOutside);
   document.removeEventListener("mousemove", doResizeLeft);
   document.removeEventListener("mouseup", stopResizeLeft);
@@ -337,36 +379,164 @@ onUnmounted(() => {
 const handleFileSearch = async () => {
   await searchFiles(fileSearchQuery.value);
 };
-const uploadFile = async (event) => {
-  /* ... */
+const uploadFile = async (files, progressCallback = null) => {
+  try {
+    if (!currentConversationId.value || !files.length) return;
+    
+    // 使用当前路径
+    const uploadPath = currentDirectoryPath.value;
+    console.log("上传文件到:", uploadPath);
+    
+    // 对每个文件进行上传
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const uploadId = `upload-${Date.now()}-${i}`;
+      
+      try {
+        if (progressCallback) {
+          progressCallback(uploadId, 1); // 开始上传，1%进度
+        }
+        
+        // 创建进度回调函数
+        const onProgress = (percent) => {
+          if (progressCallback) {
+            progressCallback(uploadId, percent);
+            console.log(`文件 ${file.name} 上传进度: ${percent}%`);
+          }
+        };
+        
+        // 上传文件，传递进度回调
+        await filesApi.upload(file, currentConversationId.value, uploadPath, onProgress);
+        
+        // 上传完成
+        if (progressCallback) {
+          progressCallback(uploadId, 100);
+        }
+      } catch (error) {
+        console.error(`文件 ${file.name} 上传失败:`, error);
+        if (progressCallback) {
+          progressCallback(uploadId, 0, `上传失败: ${error.message}`);
+        }
+      }
+    }
+    
+    // 刷新文件列表
+    await loadFiles();
+  } catch (error) {
+    console.error("上传过程中发生错误:", error);
+    alert(`上传失败: ${error.message}`);
+  }
 };
 const triggerFileUpload = () => {
   /* ... */
 };
 const openCreateFileModal = (isFolder = false) => {
-  /* ... */
+  console.log("App - openCreateFileModal被调用, isFolder:", isFolder);
+  selectedFile.value = isFolder ? 'folder' : 'file';
+  fileNameToCreate.value = '';
+  fileContentToCreate.value = '';
+  filePathToCreate.value = currentDirectoryPath.value;
+  showCreateFileModal.value = true;
 };
 const createFileOrFolder = async () => {
-  /* ... */
+  try {
+    if (!currentConversationId.value || !fileNameToCreate.value.trim()) return;
+    
+    if (selectedFile.value === 'folder') {
+      // 创建文件夹
+      await filesApi.createDirectory(fileNameToCreate.value, currentConversationId.value, filePathToCreate.value);
+    } else {
+      // 创建文件
+      await filesApi.create(fileNameToCreate.value, fileContentToCreate.value, currentConversationId.value, filePathToCreate.value);
+    }
+    
+    // 刷新文件列表
+    await loadFiles();
+    showCreateFileModal.value = false;
+  } catch (error) {
+    console.error("创建文件/文件夹失败:", error);
+    alert(`创建失败: ${error.message}`);
+  }
 };
 const deleteFileOrFolder = async (filePath) => {
   /* ... */
 };
 const openFileContent = async (filePath) => {
-  /* ... */
+  console.log("App - openFileContent被调用, 文件路径:", filePath);
+  try {
+    if (!currentConversationId.value) return;
+    
+    console.log("App - 调用API获取文件内容");
+    const response = await filesApi.getContent(filePath, currentConversationId.value);
+    
+    if (response.data.is_binary) {
+      // 如果是二进制文件，提示用户不能直接查看
+      alert("不能直接查看二进制文件。");
+      return;
+    }
+    
+    currentFileContent.value = response.data.content;
+    currentFileName.value = response.data.name;
+    currentFilePath.value = filePath;
+    showFileContentModal.value = true;
+  } catch (error) {
+    console.error("获取文件内容失败:", error);
+    alert(`无法打开文件: ${error.message}`);
+  }
 };
 const saveFileContent = async () => {
-  /* ... */
+  try {
+    if (!currentConversationId.value || !currentFilePath.value) return;
+    
+    // 保存文件内容
+    await filesApi.updateContent(currentFilePath.value, currentFileContent.value, currentConversationId.value);
+    showFileContentModal.value = false;
+    
+    // 可选：刷新文件列表
+    await loadFiles();
+  } catch (error) {
+    console.error("保存文件内容失败:", error);
+    alert(`保存失败: ${error.message}`);
+  }
 };
 const toggleMode = async () => {
-  /* ... */
+  if (!currentConversationId.value) return;
+  
+  try {
+    const currentConv = conversationHistory.value.find(
+      (conv) => conv.id === currentConversationId.value
+    );
+    
+    if (currentConv) {
+      const newMode = currentConv.mode === 'chat' ? 'agent' : 'chat';
+      const response = await conversationsApi.setMode(currentConversationId.value, newMode);
+      
+      // 更新本地状态
+      const index = conversationHistory.value.findIndex((conv) => conv.id === currentConversationId.value);
+      if (index !== -1) conversationHistory.value[index] = response.data;
+    }
+  } catch (error) {
+    console.error("切换模式失败:", error);
+  }
 };
 const inputModes = [
   { id: "chat", label: "Chat", icon: "chat" },
   { id: "agent", label: "Agent", icon: "agent" },
 ];
-const handleModeChange = (mode) => {
-  /* ... */
+const handleModeChange = async (mode) => {
+  if (!currentConversationId.value) return;
+  
+  try {
+    const response = await conversationsApi.setMode(currentConversationId.value, mode);
+    
+    // 更新本地状态
+    const index = conversationHistory.value.findIndex((conv) => conv.id === currentConversationId.value);
+    if (index !== -1) conversationHistory.value[index] = response.data;
+    
+    showModeDropdown.value = false;
+  } catch (error) {
+    console.error("更改模式失败:", error);
+  }
 };
 const showModeDropdown = ref(false);
 const toggleModeDropdown = () => {
@@ -374,13 +544,416 @@ const toggleModeDropdown = () => {
 };
 const modeDropdownRef = ref(null);
 const closeDropdownOnClickOutside = (event) => {
-  /* ... */
+  if (modeDropdownRef.value && !modeDropdownRef.value.contains(event.target)) {
+    showModeDropdown.value = false;
+  }
 };
 
 const closeMobileSidebars = () => {
   isMobileNavOpen.value = false;
   if (!isLargeScreen.value && rightSidebarWidth.value > 0) {
     rightSidebarWidth.value = 0;
+  }
+};
+
+// 下载任务相关数据和方法
+const downloadTasks = ref([]);
+const downloadStatusInterval = ref(null); // Added for polling
+
+// 暂停下载
+const pauseDownload = async (downloadId) => {
+  try {
+    console.log("暂停下载:", downloadId);
+    // 目前后端可能没有实现暂停功能，所以先在前端更新状态
+    const taskIndex = downloadTasks.value.findIndex(task => task.id === downloadId);
+    if (taskIndex !== -1) {
+      downloadTasks.value[taskIndex].status = 'paused';
+    }
+    
+    // 如果后端有实现暂停API，可以调用这里
+    // await filesApi.pauseDownload(downloadId);
+    
+    // 然后从服务器刷新状态
+    await getDownloadStatus();
+  } catch (error) {
+    console.error("暂停下载失败:", error);
+  }
+};
+
+// 恢复下载
+const resumeDownload = async (downloadId) => {
+  try {
+    console.log("恢复下载:", downloadId);
+    // 目前后端可能没有实现恢复功能，所以先在前端更新状态
+    const taskIndex = downloadTasks.value.findIndex(task => task.id === downloadId);
+    if (taskIndex !== -1) {
+      downloadTasks.value[taskIndex].status = 'downloading';
+    }
+    
+    // 如果后端有实现恢复API，可以调用这里
+    // await filesApi.resumeDownload(downloadId);
+    
+    // 然后从服务器刷新状态
+    await getDownloadStatus();
+  } catch (error) {
+    console.error("恢复下载失败:", error);
+  }
+};
+
+// 清除已完成的下载
+const clearCompletedDownloads = () => {
+  console.log("App - 清除已完成的下载任务");
+  
+  // 过滤掉已完成、失败和取消的下载，只保留正在下载和暂停的
+  const activeTasks = downloadTasks.value.filter(task => {
+    return task.status === 'downloading' || task.status === 'paused';
+  });
+  
+  console.log(`App - 清除前: ${downloadTasks.value.length} 个任务, 清除后: ${activeTasks.length} 个任务`);
+  downloadTasks.value = activeTasks;
+};
+
+// 下载文件
+const downloadFile = async (downloadInfo) => {
+  try {
+    if (!currentConversationId.value) return;
+    
+    const { url, filename } = downloadInfo;
+    console.log("开始下载文件:", url, filename, currentConversationId.value);
+    
+    // 估计一个初始大小
+    const initialSize = 1024 * 1024; // 默认1MB
+    
+    // 先添加一个临时任务到下载任务列表中以提供即时反馈
+    const tempTask = {
+      id: `temp-${Date.now()}`,
+      url: url,
+      filename: filename || url.split('/').pop() || `download_${Date.now()}`,
+      status: 'downloading',
+      progress: 1,
+      size: initialSize,
+      downloaded_size: 0,
+      speed: 0,
+      eta: 0,
+      conversation_id: currentConversationId.value
+    };
+    downloadTasks.value = [...downloadTasks.value, tempTask];
+    
+    // 调用后端API
+    const response = await filesApi.downloadFile(url, currentConversationId.value, filename);
+    console.log("后端下载响应:", response.data);
+    
+    // 下载开始后立即刷新下载状态
+    await getDownloadStatus();
+    
+    // 启动轮询以持续更新状态
+    startDownloadStatusPolling();
+  } catch (error) {
+    console.error("下载文件失败:", error);
+    // 添加失败状态的任务
+    const failedTask = {
+      id: `failed-${Date.now()}`,
+      url: downloadInfo.url,
+      filename: downloadInfo.filename || downloadInfo.url.split('/').pop() || `download_${Date.now()}`,
+      status: 'failed',
+      progress: 0,
+      size: 0,
+      downloaded_size: 0,
+      speed: 0,
+      eta: 0,
+      conversation_id: currentConversationId.value
+    };
+    downloadTasks.value = [...downloadTasks.value.filter(t => !t.id.startsWith('temp-')), failedTask];
+  }
+};
+
+// 启动下载状态轮询
+const startDownloadStatusPolling = () => {
+  if (downloadStatusInterval.value) {
+    clearInterval(downloadStatusInterval.value);
+  }
+  console.log("启动下载状态轮询");
+  // 首先立即获取一次
+  getDownloadStatus();
+  
+  // 然后开始定期轮询
+  downloadStatusInterval.value = setInterval(async () => {
+    if (!currentConversationId.value) {
+      stopDownloadStatusPolling();
+      return;
+    }
+    await getDownloadStatus();
+  }, 2000); // 每2秒轮询一次
+};
+
+const stopDownloadStatusPolling = () => {
+  if (downloadStatusInterval.value) {
+    console.log("停止下载状态轮询");
+    clearInterval(downloadStatusInterval.value);
+    downloadStatusInterval.value = null;
+  }
+};
+
+// 获取下载状态
+const getDownloadStatus = async () => {
+  try {
+    if (!currentConversationId.value) {
+      stopDownloadStatusPolling();
+      return;
+    }
+    
+    console.log("获取下载状态:", currentConversationId.value);
+    const response = await filesApi.getDownloadStatus(null, currentConversationId.value);
+    console.log("下载状态原始响应:", response.data);
+    
+    if (response.data && Array.isArray(response.data)) {
+      // 确保每个任务都有所需的字段
+      const validatedTasks = response.data.map(task => {
+        // 确保返回的数据格式正确
+        const validatedTask = {
+          id: task.id || `task-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+          filename: task.filename || '未知文件',
+          url: task.url || '',
+          status: ['downloading', 'completed', 'failed', 'cancelled', 'paused'].includes(task.status) ? task.status : 'downloading',
+          progress: typeof task.progress === 'number' ? task.progress : 0,
+          size: typeof task.size === 'number' ? task.size : 0,
+          downloaded_size: typeof task.downloaded_size === 'number' ? task.downloaded_size : 0,
+          speed: typeof task.speed === 'number' ? task.speed : 0,
+          eta: typeof task.eta === 'number' ? task.eta : 0
+        };
+        
+        console.log(`任务 ${validatedTask.id} 数据:`, {
+          文件名: validatedTask.filename,
+          大小: validatedTask.size,
+          已下载: validatedTask.downloaded_size,
+          进度: validatedTask.progress,
+          速度: validatedTask.speed,
+          剩余时间: validatedTask.eta
+        });
+        
+        return validatedTask;
+      });
+      
+      // 保留临时任务，同时更新服务器返回的任务
+      const tempTasks = downloadTasks.value.filter(task => task.id.startsWith('temp-'));
+      
+      // 如果服务器返回了任务，说明临时任务应该被移除
+      if (validatedTasks.length > 0) {
+        downloadTasks.value = validatedTasks;
+        console.log("已更新下载任务列表:", downloadTasks.value.length);
+      } else if (tempTasks.length > 0) {
+        // 只有临时任务，保留它们
+        downloadTasks.value = tempTasks;
+      } else {
+        downloadTasks.value = [];
+      }
+      
+      // 检查是否有活跃下载
+      const activeDownloads = downloadTasks.value.some(task => task.status === 'downloading');
+      
+      // 如果没有活跃下载但轮询仍在进行，停止轮询
+      if (!activeDownloads && downloadStatusInterval.value) {
+        stopDownloadStatusPolling();
+      }
+    } else {
+      console.warn("下载状态响应格式不正确:", response.data);
+    }
+  } catch (error) {
+    console.error("获取下载状态失败:", error);
+    // 错误后不立即停止轮询，给后端一些恢复的时间
+  }
+};
+
+// 取消下载
+const cancelDownload = async (downloadId) => {
+  try {
+    console.log("取消下载:", downloadId);
+    const response = await filesApi.cancelDownload(downloadId);
+    console.log("取消下载响应:", response.data);
+    
+    // 立即更新下载任务状态
+    const taskIndex = downloadTasks.value.findIndex(task => task.id === downloadId);
+    if (taskIndex !== -1) {
+      downloadTasks.value[taskIndex].status = 'cancelled';
+    }
+    
+    // 然后从服务器刷新状态
+    await getDownloadStatus();
+  } catch (error) {
+    console.error("取消下载失败:", error);
+  }
+};
+
+// 导航到指定路径
+const navigateToDirectory = async (path) => {
+  currentDirectoryPath.value = path;
+  await loadFiles();
+};
+
+// 重命名文件
+const renameFile = async ({oldPath, newName, isDirectory}) => {
+  try {
+    if (!currentConversationId.value) return;
+    
+    console.log("重命名文件:", oldPath, "为:", newName);
+    const response = await filesApi.renameFile(oldPath, newName, currentConversationId.value);
+    console.log("重命名响应:", response.data);
+    
+    // 重新加载文件列表
+    await loadFiles();
+  } catch (error) {
+    console.error("重命名文件失败:", error);
+    // 显示错误消息
+    alert(`重命名失败: ${error.response?.data?.error || error.message}`);
+  }
+};
+
+// 直接下载文件，接收文件路径
+const directDownloadFile = async (filePath) => {
+  console.log(`App - directDownloadFile: Initiating download for ${filePath}`);
+  try {
+    if (!currentConversationId.value) {
+      console.error("App - directDownloadFile: No currentConversationId. Aborting download.");
+      return;
+    }
+    
+    console.log(`App - directDownloadFile: Attempting to download ${filePath} for conversation ${currentConversationId.value}`);
+    
+    const tempDownloadId = `direct-dl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    const filename = filePath.split('/').pop() || '未知文件';
+
+    downloadTasks.value.push({
+      id: tempDownloadId,
+      filename: filename,
+      status: 'downloading',
+      progress: 0,
+      source: 'direct' 
+    });
+    console.log(`App - directDownloadFile: Added task ${tempDownloadId} for ${filename} to downloadTasks.`);
+    
+    const response = await filesApi.directDownload(filePath, currentConversationId.value);
+    console.log(`App - directDownloadFile: API response received for ${filePath}. Status: ${response.status}`);
+    
+    const url = window.URL.createObjectURL(new Blob([response.data]));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', filename);
+    document.body.appendChild(link);
+    link.click();
+    console.log(`App - directDownloadFile: Download triggered for ${filename}`);
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+    
+    const index = downloadTasks.value.findIndex(task => task.id === tempDownloadId);
+    if (index !== -1) {
+      downloadTasks.value[index].status = 'completed';
+      downloadTasks.value[index].progress = 100;
+      console.log(`App - directDownloadFile: Task ${tempDownloadId} for ${filename} marked as completed.`);
+      setTimeout(() => {
+        downloadTasks.value = downloadTasks.value.filter(task => task.id !== tempDownloadId);
+        console.log(`App - directDownloadFile: Task ${tempDownloadId} for ${filename} removed from downloadTasks after timeout.`);
+      }, 5000); 
+    }
+  } catch (error) {
+    console.error(`App - directDownloadFile: Error downloading ${filePath}:`, error);
+    alert(`下载 ${filePath.split('/').pop()} 失败: ${error.response?.data?.error || error.message}`);
+    const filename = filePath.split('/').pop() || '未知文件';
+    // Try to find the specific task to mark as failed
+    let existingTaskIndex = downloadTasks.value.findIndex(task => task.filename === filename && task.status === 'downloading' && task.source === 'direct');
+    if (existingTaskIndex !== -1) {
+        downloadTasks.value[existingTaskIndex].status = 'failed';
+        console.log(`App - directDownloadFile: Task for ${filename} (ID: ${downloadTasks.value[existingTaskIndex].id}) marked as failed.`);
+    } else {
+        // If no specific downloading task found, add a new failed entry
+        const failedTaskId = `direct-dl-failed-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+        downloadTasks.value.push({
+            id: failedTaskId,
+            filename: filename,
+            status: 'failed',
+            progress: 0,
+            source: 'direct'
+        });
+        console.log(`App - directDownloadFile: Added new failed task ${failedTaskId} for ${filename} to downloadTasks.`);
+    }
+  }
+};
+
+// 处理批量直接下载文件
+const downloadBatchFilesAsZip = async (filePaths) => {
+  console.log("App - downloadBatchFilesAsZip: Received request to download files as ZIP:", filePaths);
+  if (!currentConversationId.value) {
+    console.error("App - downloadBatchFilesAsZip: No currentConversationId. Aborting ZIP download.");
+    alert("无法开始批量下载：缺少会话信息。");
+    return;
+  }
+  if (!filePaths || filePaths.length === 0) {
+    console.warn("App - downloadBatchFilesAsZip: No file paths provided for ZIP download.");
+    alert("请至少选择一个文件进行批量下载。");
+    return;
+  }
+
+  const tempDownloadId = `batch-zip-dl-${Date.now()}`;
+  const zipFilename = `batch_download_${currentConversationId.value}_${new Date().toISOString().slice(0,19).replace(/[-:T]/g,"")}.zip`;
+
+  downloadTasks.value.push({
+    id: tempDownloadId,
+    filename: zipFilename,
+    status: 'downloading',
+    progress: 0, // 对于ZIP包，进度可能较难精确跟踪，可以设置为0或一个中间值
+    source: 'batch-zip'
+  });
+  console.log(`App - downloadBatchFilesAsZip: Added task ${tempDownloadId} for ${zipFilename} to downloadTasks.`);
+
+  try {
+    console.log(`App - downloadBatchFilesAsZip: Calling API for ZIP download. Files: ${filePaths.length}, ConvID: ${currentConversationId.value}`);
+    const response = await filesApi.downloadBatchAsZip(filePaths, currentConversationId.value);
+    console.log(`App - downloadBatchFilesAsZip: API response received. Status: ${response.status}`);
+
+    const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/zip' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', zipFilename);
+    document.body.appendChild(link);
+    link.click();
+    console.log(`App - downloadBatchFilesAsZip: ZIP download triggered for ${zipFilename}`);
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+
+    const index = downloadTasks.value.findIndex(task => task.id === tempDownloadId);
+    if (index !== -1) {
+      downloadTasks.value[index].status = 'completed';
+      downloadTasks.value[index].progress = 100;
+      console.log(`App - downloadBatchFilesAsZip: Task ${tempDownloadId} for ${zipFilename} marked as completed.`);
+      setTimeout(() => {
+        downloadTasks.value = downloadTasks.value.filter(task => task.id !== tempDownloadId);
+        console.log(`App - downloadBatchFilesAsZip: Task ${tempDownloadId} for ${zipFilename} removed from downloadTasks after timeout.`);
+      }, 5000);
+    }
+  } catch (error) {
+    console.error("App - downloadBatchFilesAsZip: Error downloading ZIP:", error);
+    alert(`批量下载ZIP失败: ${error.response?.data?.error || error.message || '未知错误'}`);
+    const index = downloadTasks.value.findIndex(task => task.id === tempDownloadId);
+    if (index !== -1) {
+      downloadTasks.value[index].status = 'failed';
+      console.log(`App - downloadBatchFilesAsZip: Task ${tempDownloadId} for ${zipFilename} marked as failed.`);
+    }
+  }
+};
+
+// 处理下载请求 - 统一入口
+const handleDownload = (param) => {
+  console.log("App - handleDownload接收到参数:", param);
+  
+  // 如果是对象且有url属性，使用downloadFile从URL下载
+  if (typeof param === 'object' && param !== null && param.url) {
+    downloadFile(param);
+  } 
+  // 如果是字符串，使用directDownloadFile从本地下载
+  else if (typeof param === 'string') {
+    directDownloadFile(param);
+  }
+  else {
+    console.error("App - handleDownload: 无效的下载参数", param);
   }
 };
 </script>
@@ -697,6 +1270,24 @@ const closeMobileSidebars = () => {
         ref="messageDisplayArea"
         class="flex-1 overflow-y-auto py-6 px-4 sm:px-6 bg-gradient-to-b from-slate-950 to-slate-900 scrollbar-thin"
       >
+        <!-- 模式指示横幅 -->
+        <div
+          v-if="currentConversationId"
+          :class="[
+            'py-2 px-4 mb-6 text-center text-sm font-medium rounded-lg border animate-fade-in max-w-md mx-auto',
+            conversationHistory.find((c) => c.id === currentConversationId)?.mode === 'agent'
+              ? 'bg-blue-600/30 text-blue-100 border-blue-700/50'
+              : 'bg-emerald-600/30 text-emerald-100 border-emerald-700/50',
+          ]"
+        >
+          <span v-if="conversationHistory.find((c) => c.id === currentConversationId)?.mode === 'agent'">
+            <span class="font-bold">Agent Mode</span> - Describe your analysis goal, I'll create workflows
+          </span>
+          <span v-else>
+            <span class="font-bold">Chat Mode</span> - Ask questions to get professional answers
+          </span>
+        </div>
+        
         <div
           v-if="messages.length === 1 && messages[0].isWelcome"
           class="flex flex-col items-center justify-center h-full"
@@ -814,15 +1405,17 @@ const closeMobileSidebars = () => {
           :key="message.id"
           :class="[
             'flex mb-6',
-            message.sender === 'user' ? 'justify-end' : 'justify-start',
+            message.sender === 'user' ? 'justify-end' : 
+            message.sender === 'system' ? 'justify-center' : 'justify-start',
           ]"
         >
           <div
             :class="[
-              'max-w-md lg:max-w-lg px-4 py-3 rounded-xl shadow-md',
               message.sender === 'user'
-                ? 'bg-gradient-to-br from-emerald-500 to-emerald-600 text-white'
-                : 'bg-slate-700 text-slate-100 border border-slate-600/50',
+                ? 'max-w-md lg:max-w-lg px-4 py-3 rounded-xl shadow-md bg-gradient-to-br from-emerald-500 to-emerald-600 text-white'
+                : message.sender === 'system'
+                ? 'max-w-md px-4 py-2 rounded-lg bg-slate-800/80 text-slate-300 border border-slate-700/50 text-center text-sm animate-fade-in'
+                : 'max-w-md lg:max-w-lg px-4 py-3 rounded-xl shadow-md bg-slate-700 text-slate-100 border border-slate-600/50',
             ]"
           >
             <p class="whitespace-pre-wrap text-sm leading-relaxed">{{ message.text }}</p>
@@ -891,6 +1484,38 @@ const closeMobileSidebars = () => {
                   />
                 </svg>
               </button>
+              
+              <!-- 模式切换下拉菜单 -->
+              <div 
+                v-if="showModeDropdown"
+                class="absolute bottom-full left-0 mb-1 w-48 bg-slate-800 border border-slate-700 rounded-md shadow-lg z-50 overflow-hidden"
+              >
+                <div class="py-1">
+                  <button
+                    v-for="mode in inputModes"
+                    :key="mode.id"
+                    @click="handleModeChange(mode.id)"
+                    class="w-full flex items-center px-4 py-2 text-sm transition-colors hover:bg-slate-700"
+                    :class="[
+                      conversationHistory.find((c) => c.id === currentConversationId)?.mode === mode.id 
+                        ? 'bg-emerald-600/20 text-white' 
+                        : 'text-slate-300 hover:text-white'
+                    ]"
+                  >
+                    <span v-if="mode.id === 'chat'" class="mr-2 text-emerald-500">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M18 10c0 3.866-3.582 7-8 7a8.841 8.841 0 01-4.083-.98L2 17l1.338-3.123C2.493 12.767 2 11.434 2 10c0-3.866 3.582-7 8-7s8 3.134 8 7zM7 9H5v2h2V9zm8 0h-2v2h2V9zM9 9h2v2H9V9z" clip-rule="evenodd" />
+                      </svg>
+                    </span>
+                    <span v-else class="mr-2 text-blue-500">
+                      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" />
+                      </svg>
+                    </span>
+                    <span>{{ mode.label }}</span>
+                  </button>
+                </div>
+              </div>
             </div>
             <input
               type="text"
@@ -934,291 +1559,32 @@ const closeMobileSidebars = () => {
     ></div>
 
     <!-- Right Sidebar - Project Files -->
-    <aside
-      :style="
-        isLargeScreen
-          ? { width: rightSidebarWidth + 'px' }
-          : { width: mobileRightSidebarWidth + 'px' }
-      "
-      class="flex flex-col overflow-y-auto bg-slate-800 text-slate-100 border-l border-slate-700 transition-transform transform duration-300 ease-in-out z-40 lg:relative lg:translate-x-0 lg:flex-shrink-0 lg:z-auto"
-      :class="{
-        'fixed inset-y-0 right-0': !isLargeScreen,
-        'translate-x-0': !isLargeScreen && isRightSidebarLogicallyOpen,
-        'translate-x-full': !isLargeScreen && !isRightSidebarLogicallyOpen,
-        [isLargeScreen
-          ? isResizingRight
-            ? 'duration-0'
-            : 'transition-all duration-100'
-          : '']: true,
-      }"
-    >
-      <template v-if="isRightSidebarLogicallyOpen">
-        <div
-          class="p-4 border-b border-slate-800/70 flex justify-between items-center flex-shrink-0"
-        >
-          <h3 class="font-semibold text-md text-emerald-400">Project Files</h3>
-          <button
-            @click="toggleFileSidebar"
-            class="p-1 rounded-md hover:bg-slate-700 text-slate-400 hover:text-slate-200"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-4 w-4"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-            >
-              <path
-                fill-rule="evenodd"
-                d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                clip-rule="evenodd"
-              />
-            </svg>
-          </button>
-        </div>
-        <div class="flex-1 overflow-y-auto scrollbar-thin p-2">
-          <div class="mb-4 relative">
-            <input
-              type="text"
-              placeholder="Search files..."
-              class="w-full py-2 px-3 bg-slate-800/60 border border-slate-700/50 rounded-lg text-sm placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/50"
-              v-model="fileSearchQuery"
-              @input="handleFileSearch"
-            />
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              class="h-4 w-4 absolute right-3 top-2.5 text-slate-500"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-            >
-              <path
-                fill-rule="evenodd"
-                d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z"
-                clip-rule="evenodd"
-              />
-            </svg>
-          </div>
-          <div v-if="isLoading" class="flex justify-center items-center py-4">
-            <div
-              class="animate-spin rounded-full h-6 w-6 border-b-2 border-emerald-500"
-            ></div>
-            <span class="ml-2 text-sm text-slate-400">Loading...</span>
-          </div>
-          <div
-            v-else-if="projectFiles.length === 0"
-            class="py-4 text-center text-slate-400 text-sm"
-          >
-            <div class="mb-2">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                class="h-10 w-10 mx-auto text-slate-600"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  stroke-width="1.5"
-                  d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 002-2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"
-                />
-              </svg>
-            </div>
-            <p>No files in the current conversation</p>
-            <p class="mt-2">Click the buttons below to create or upload files</p>
-          </div>
-          <div v-else class="space-y-0.5">
-            <div v-for="file in projectFiles" :key="file.id" class="group">
-              <div
-                class="flex items-center py-2 px-3 rounded-lg hover:bg-slate-750 cursor-pointer"
-              >
-                <span class="mr-2 text-slate-400">
-                  <svg
-                    v-if="file.type === 'folder'"
-                    xmlns="http://www.w3.org/2000/svg"
-                    class="h-5 w-5 text-emerald-500"
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                  >
-                    <path
-                      d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"
-                    />
-                  </svg>
-                  <svg
-                    v-else-if="file.type === 'python'"
-                    xmlns="http://www.w3.org/2000/svg"
-                    class="h-5 w-5 text-blue-500"
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                  >
-                    <path
-                      fill-rule="evenodd"
-                      d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"
-                      clip-rule="evenodd"
-                    />
-                  </svg>
-                  <svg
-                    v-else
-                    xmlns="http://www.w3.org/2000/svg"
-                    class="h-5 w-5 text-slate-500"
-                    viewBox="0 0 20 20"
-                    fill="currentColor"
-                  >
-                    <path
-                      fill-rule="evenodd"
-                      d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"
-                      clip-rule="evenodd"
-                    />
-                  </svg>
-                </span>
-                <span class="text-sm flex-1 truncate">{{ file.name }}</span>
-                <div class="flex opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    @click.stop="openFileContent(file.path)"
-                    class="p-1 hover:bg-slate-700 rounded-md"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      class="h-3.5 w-3.5 text-slate-400"
-                      viewBox="0 0 20 20"
-                      fill="currentColor"
-                    >
-                      <path
-                        d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"
-                      />
-                    </svg>
-                  </button>
-                  <button
-                    @click.stop="deleteFileOrFolder(file.path)"
-                    class="p-1 hover:bg-slate-700 rounded-md ml-1"
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      class="h-3.5 w-3.5 text-slate-400"
-                      viewBox="0 0 20 20"
-                      fill="currentColor"
-                    >
-                      <path
-                        fill-rule="evenodd"
-                        d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z"
-                        clip-rule="evenodd"
-                      />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-              <div
-                v-if="file.type === 'folder' && file.children && file.children.length > 0"
-                class="ml-4 border-l border-slate-800 pl-2 my-1"
-              >
-                <div v-for="childFile in file.children" :key="childFile.id" class="group">
-                  <div
-                    class="flex items-center py-2 px-3 rounded-lg hover:bg-slate-750 cursor-pointer"
-                  >
-                    <span class="mr-2 text-slate-400">
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        class="h-5 w-5 text-slate-500"
-                        viewBox="0 0 20 20"
-                        fill="currentColor"
-                      >
-                        <path
-                          fill-rule="evenodd"
-                          d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"
-                          clip-rule="evenodd"
-                        />
-                      </svg>
-                    </span>
-                    <span class="text-sm flex-1 truncate">{{ childFile.name }}</span>
-                    <div
-                      class="flex opacity-0 group-hover:opacity-100 transition-opacity"
-                    >
-                      <button
-                        @click.stop="openFileContent(file.path + '/' + childFile.name)"
-                        class="p-1 hover:bg-slate-700 rounded-md"
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          class="h-3.5 w-3.5 text-slate-400"
-                          viewBox="0 0 20 20"
-                          fill="currentColor"
-                        >
-                          <path
-                            d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"
-                          />
-                        </svg>
-                      </button>
-                      <button
-                        @click.stop="deleteFileOrFolder(file.path + '/' + childFile.name)"
-                        class="p-1 hover:bg-slate-700 rounded-md ml-1"
-                      >
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          class="h-3.5 w-3.5 text-slate-400"
-                          viewBox="0 0 20 20"
-                          fill="currentColor"
-                        >
-                          <path
-                            fill-rule="evenodd"
-                            d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z"
-                            clip-rule="evenodd"
-                          />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="p-3.5 border-t border-slate-800/70 bg-slate-900 flex-shrink-0">
-          <div class="grid grid-cols-2 gap-2">
-            <button
-              @click="triggerFileUpload"
-              class="flex items-center justify-center space-x-1.5 py-2.5 px-3 bg-slate-700 hover:bg-slate-600/80 rounded-lg transition-colors text-sm text-slate-300 hover:text-slate-100 border border-slate-600"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                class="h-4 w-4 text-emerald-500"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path
-                  fill-rule="evenodd"
-                  d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z"
-                  clip-rule="evenodd"
-                />
-              </svg>
-              <span>Upload File</span>
-            </button>
-            <button
-              @click="openCreateFileModal()"
-              class="flex items-center justify-center space-x-1.5 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-500 rounded-lg transition-colors text-white text-sm font-medium shadow-md"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                class="h-4 w-4"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path
-                  fill-rule="evenodd"
-                  d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z"
-                  clip-rule="evenodd"
-                />
-              </svg>
-              <span>New File</span>
-            </button>
-          </div>
-          <input
-            type="file"
-            ref="fileUploadInput"
-            @change="uploadFile"
-            style="display: none"
-          />
-        </div>
-      </template>
-    </aside>
+    <Sidebar
+      v-model:showSidebar="isRightSidebarLogicallyOpen"
+      v-model:sidebarWidth="rightSidebarWidth"
+      :conversationId="currentConversationId"
+      :projectFiles="projectFiles"
+      :currentPath="currentDirectoryPath"
+      :downloadTasks="downloadTasks"
+      @file-search="searchFiles"
+      @file-select="openFileContent"
+      @delete-file="deleteFileOrFolder"
+      @refresh-files="loadFiles"
+      @create-file="openCreateFileModal"
+      @create-directory="openCreateFileModal(true)"
+      @upload-files="uploadFile"
+      @view-file="openFileContent"
+      @download-file="handleDownload"
+      @rename-file="renameFile"
+      @navigate="navigateToDirectory"
+      @get-download-status="getDownloadStatus"
+      @cancel-download="cancelDownload"
+      @pause-download="pauseDownload"
+      @resume-download="resumeDownload"
+      @clear-completed="clearCompletedDownloads"
+      @download-multiple-files="downloadBatchFilesAsZip"
+      ref="sidebarRef"
+    />
 
     <!-- Modals -->
     <div

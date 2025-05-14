@@ -92,7 +92,7 @@ def delete_conversation(conversation_id):
 def send_message(conversation_id):
     """Send a message in a conversation"""
     data = request.json or {}
-    message_text = data.get('text')
+    message_text = data.get('message')
     
     if not message_text:
         return jsonify({"error": "Message text is required"}), 400

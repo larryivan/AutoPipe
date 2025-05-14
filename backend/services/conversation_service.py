@@ -125,18 +125,35 @@ class ConversationService:
             raise ValueError("Mode must be either 'chat' or 'agent'")
             
         conversation = self.get_conversation(conversation_id)
+        
+        # 如果模式没有改变，则不做任何处理
+        if conversation.get('mode') == mode:
+            return conversation
+        
+        # 更新模式
         conversation['mode'] = mode
         conversation['updated_at'] = datetime.now().isoformat()
         
-        # Add a system message about mode change
+        # 针对不同模式添加不同的系统消息
         timestamp = datetime.now().isoformat()
-        mode_message = {
-            'id': f"mode-{uuid.uuid4().hex[:8]}",
-            'text': f"Switched to {mode.capitalize()} Mode",
-            'sender': 'system',
-            'timestamp': timestamp,
-            'isSystem': True
-        }
+        
+        if mode == 'chat':
+            mode_message = {
+                'id': f"mode-{uuid.uuid4().hex[:8]}",
+                'text': "Switched to Chat Mode - You can ask any bioinformatics questions",
+                'sender': 'system',
+                'timestamp': timestamp,
+                'isSystem': True
+            }
+        else:  # agent mode
+            mode_message = {
+                'id': f"mode-{uuid.uuid4().hex[:8]}",
+                'text': "Switched to Agent Mode - You can describe your bioinformatics analysis goals, I'll create workflows to help you",
+                'sender': 'system',
+                'timestamp': timestamp,
+                'isSystem': True
+            }
+        
         conversation['messages'].append(mode_message)
         
         self._save_conversation(conversation)
