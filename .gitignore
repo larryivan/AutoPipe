@@ -259,3 +259,7 @@ Temporary Items
 .ionide
 
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode
+
+# Project backend specific data (user uploads, knowledge bases, etc.)
+backend/data/
+backend/knowledge/

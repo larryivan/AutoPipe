@@ -2,7 +2,8 @@ from flask import Blueprint, request, jsonify
 import os
 import logging
 from services.conversation_service import ConversationService
-from services.ai_service import AIService
+from services.chat_service import AIService
+from services.pipeline_service import PipelineService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -12,13 +13,9 @@ logger = logging.getLogger(__name__)
 conversation_routes = Blueprint('conversation_routes', __name__)
 
 # Initialize services
-ai_service = AIService(
-    api_key=os.environ.get('OPENAI_API_KEY'),
-    api_base=os.environ.get('OPENAI_API_BASE'),
-    model_name=os.environ.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
-    temperature=0.7
-)
-conversation_service = ConversationService(ai_service=ai_service)
+ai_service = AIService()
+pipeline_service = PipelineService(llm_service=ai_service)
+conversation_service = ConversationService(ai_service=ai_service, pipeline_service=pipeline_service)
 
 @conversation_routes.route('/conversations', methods=['GET'])
 def get_all_conversations():

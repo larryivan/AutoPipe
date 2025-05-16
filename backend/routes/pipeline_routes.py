@@ -3,7 +3,7 @@ import os
 import logging
 from services.pipeline_service import PipelineService
 from services.file_service import FileService
-from services.ai_service import AIService
+from services.chat_service import AIService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,12 +14,7 @@ pipeline_routes = Blueprint('pipeline_routes', __name__)
 
 # Initialize services
 file_service = FileService()
-ai_service = AIService(
-    api_key=os.environ.get('OPENAI_API_KEY'),
-    api_base=os.environ.get('OPENAI_API_BASE'),
-    model_name=os.environ.get('OPENAI_MODEL_NAME', 'gpt-3.5-turbo'),
-    temperature=0.2
-)
+ai_service = AIService()
 pipeline_service = PipelineService(llm_service=ai_service)
 
 @pipeline_routes.route('/workflows', methods=['GET'])
@@ -43,6 +38,23 @@ def get_workflow(workflow_id):
         return jsonify({'error': 'Workflow not found'}), 404
     
     return jsonify(workflow)
+
+@pipeline_routes.route('/workflows/<workflow_id>', methods=['PUT'])
+def update_workflow(workflow_id):
+    """Update a workflow"""
+    data = request.json
+    
+    if not data:
+        return jsonify({'error': 'Missing request body'}), 400
+    
+    try:
+        updated_workflow = pipeline_service.update_workflow(workflow_id, data)
+        return jsonify(updated_workflow)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        logger.error(f"Error updating workflow: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @pipeline_routes.route('/workflows', methods=['POST'])
 def create_workflow():
@@ -82,4 +94,26 @@ def execute_step(workflow_id, step_id):
         return jsonify({'error': str(e)}), 404
     except Exception as e:
         logger.error(f"Error executing step: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@pipeline_routes.route('/pipelines/plan', methods=['POST'])
+def plan_pipeline():
+    """Plan a new pipeline"""
+    data = request.json
+    conversation_id = data.get('conversation_id')
+    goal = data.get('goal')
+    
+    if not conversation_id or not goal:
+        return jsonify({'error': 'Missing required parameters'}), 400
+    
+    try:
+        # Get files for this conversation
+        files = file_service.get_all_files(conversation_id)
+        
+        # Plan pipeline
+        pipeline = pipeline_service.plan_pipeline(conversation_id, goal, files)
+        
+        return jsonify(pipeline)
+    except Exception as e:
+        logger.error(f"Error planning pipeline: {e}")
         return jsonify({'error': str(e)}), 500

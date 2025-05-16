@@ -99,6 +99,63 @@ class PipelineService:
         
         return workflow
     
+    def update_workflow(self, workflow_id: str, updated_workflow: Dict) -> Dict:
+        """Update an existing workflow with user modifications"""
+        # Get the existing workflow
+        existing_workflow = self.get_workflow(workflow_id)
+        if not existing_workflow:
+            raise ValueError(f"Workflow with ID {workflow_id} not found")
+        
+        # Preserve critical metadata
+        updated_workflow['id'] = existing_workflow['id']
+        updated_workflow['conversation_id'] = existing_workflow['conversation_id']
+        updated_workflow['created_at'] = existing_workflow['created_at']
+        updated_workflow['updated_at'] = time.time()
+        
+        # If status was completed or in_progress but steps were modified,
+        # reset to 'modified'
+        if existing_workflow['status'] in ['completed', 'in_progress']:
+            # Check if steps were modified
+            existing_steps = {step['id']: step for step in existing_workflow.get('steps', [])}
+            updated_steps = {step['id']: step for step in updated_workflow.get('steps', [])}
+            
+            # If step IDs changed or command content changed, mark as modified
+            steps_changed = (
+                set(existing_steps.keys()) != set(updated_steps.keys()) or
+                any(
+                    existing_steps.get(step_id, {}).get('command') != updated_steps.get(step_id, {}).get('command')
+                    for step_id in updated_steps
+                )
+            )
+            
+            if steps_changed:
+                updated_workflow['status'] = 'modified'
+            else:
+                # Keep existing status if steps weren't changed
+                updated_workflow['status'] = existing_workflow['status']
+        else:
+            # No change needed for other status values
+            updated_workflow['status'] = existing_workflow['status']
+        
+        # Preserve execution results for unchanged steps
+        if 'steps' in updated_workflow and 'steps' in existing_workflow:
+            existing_step_map = {step['id']: step for step in existing_workflow['steps']}
+            
+            for step in updated_workflow['steps']:
+                step_id = step['id']
+                if step_id in existing_step_map:
+                    existing_step = existing_step_map[step_id]
+                    # If commands match, preserve execution results
+                    if step['command'] == existing_step.get('command'):
+                        for key in ['status', 'output', 'error', 'start_time', 'end_time']:
+                            if key in existing_step:
+                                step[key] = existing_step[key]
+        
+        # Save the updated workflow
+        self._save_workflow(workflow_id, updated_workflow)
+        
+        return updated_workflow
+    
     def _create_fallback_workflow(self, goal: str, files: List[Dict]) -> Dict:
         """Create a basic workflow when LLM is unavailable"""
         # Detect file types to determine workflow type

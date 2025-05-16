@@ -1,7 +1,6 @@
 import os
 import uuid
 import json
-import random
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -16,286 +15,173 @@ except ImportError:
     pass  # dotenv不可用，使用默认环境变量
 
 # 导入应用配置
-from config import (
-    USE_FALLBACK_ONLY, 
-    DEBUG, 
-    OPENAI_API_KEY, 
-    OPENAI_API_BASE, 
-    OPENAI_MODEL_NAME,
-    API_TIMEOUT
-)
+from config import DEBUG
 
-# 添加Langchain相关导入
-LANGCHAIN_AVAILABLE = False # This is an initial declaration, its value is updated below.
-if not USE_FALLBACK_ONLY:
-    try:
-        # from langchain_community.llms import OpenAI  # 旧的导入
-        from langchain_openai import ChatOpenAI         # 新的导入，使用Chat模型接口
-        from langchain_core.prompts import PromptTemplate
-        from langchain_core.output_parsers import StrOutputParser
-        from langchain_core.runnables import RunnablePassthrough
-        LANGCHAIN_AVAILABLE = True
-    except ImportError as e:
-        # More specific logging if imports fail.
-        logging.warning(f"Langchain modules could not be imported: {e}. Langchain features will be unavailable.")
-        pass  # Langchain不可用
-
-import logging
+# 服务导入
+from services.chat_service import AIService
+from services.conversation_service import ConversationService
+from services.pipeline_service import PipelineService
+# LLM相关导入和配置已移除
 
 # 设置日志
 logging.basicConfig(level=logging.INFO if DEBUG else logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# 记录配置状态
-if USE_FALLBACK_ONLY:
-    logger.warning("AI processing is disabled via USE_FALLBACK_ONLY=True. No AI responses will be generated.")
-elif LANGCHAIN_AVAILABLE:
-    logger.info("Langchain is available. LLM will be used for generating responses.")
-else:
-    logger.warning("Langchain is unavailable. AI responses cannot be generated.")
+# LLM相关配置状态日志已移除
 
 app = Flask(__name__)
 CORS(app)  # 允许跨域请求
 
-# 数据存储路径
+# 初始化服务
+ai_service = AIService()
+pipeline_service = PipelineService(llm_service=ai_service)
+conversation_service = ConversationService(ai_service=ai_service, pipeline_service=pipeline_service)
+
+
+# 数据存储路径 (这部分可以保留，因为 ConversationService 内部也使用了类似的路径逻辑，但为了解耦，未来可以考虑统一由 ConversationService 管理)
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 CONVERSATIONS_DIR = os.path.join(DATA_DIR, 'conversations')
-FILES_DIR = os.path.join(DATA_DIR, 'files')
+FILES_DIR = os.path.join(DATA_DIR, 'files') # 文件相关的目录，ConversationService 不直接管理
 
-# 确保数据目录存在
-os.makedirs(CONVERSATIONS_DIR, exist_ok=True)
-os.makedirs(FILES_DIR, exist_ok=True)
+# 确保数据目录存在 (部分目录创建可能已在 Service 中处理，但保留这里的 files 目录创建无害)
+os.makedirs(CONVERSATIONS_DIR, exist_ok=True) # ConversationService 会创建
+os.makedirs(FILES_DIR, exist_ok=True) # 文件相关的目录
 
-# 获取对话专属文件目录
+# 获取对话专属文件目录 (这个函数主要用于文件管理API，ConversationService 不直接使用)
 def get_conversation_files_dir(conversation_id):
     conversation_files_dir = os.path.join(FILES_DIR, conversation_id)
     os.makedirs(conversation_files_dir, exist_ok=True)
     return conversation_files_dir
 
-# 获取对话历史记录
-def get_conversation_history(conversation_id, max_messages=10):
-    file_path = os.path.join(CONVERSATIONS_DIR, f'{conversation_id}.json')
-    if not os.path.exists(file_path):
-        return []
-    
-    with open(file_path, 'r', encoding='utf-8') as f:
-        conversation = json.load(f)
-    
-    # 只获取最近的几条消息
-    messages = conversation.get('messages', [])[-max_messages:]
-    
-    # 格式化为简单的对话历史
-    history = []
-    for msg in messages:
-        if msg.get('isWelcome'):
-            continue
-        history.append({
-            'role': 'assistant' if msg.get('sender') == 'bot' else 'user',
-            'content': msg.get('text', '')
-        })
-    
-    return history
+# 获取对话历史记录 (此函数与LLM无关，保留) -> ConversationService 中已有类似功能，可以移除
+# def get_conversation_history(conversation_id, max_messages=10):
+#     file_path = os.path.join(CONVERSATIONS_DIR, f'{conversation_id}.json')
+#     if not os.path.exists(file_path):
+#         return []
+#     
+#     with open(file_path, 'r', encoding='utf-8') as f:
+#         conversation = json.load(f)
+#     
+#     messages = conversation.get('messages', [])[-max_messages:]
+#     history = []
+#     for msg in messages:
+#         if msg.get('isWelcome'):
+#             continue
+#         history.append({
+#             'role': 'assistant' if msg.get('sender') == 'bot' else 'user',
+#             'content': msg.get('text', '')
+#         })
+#     return history
 
-# 使用Langchain构建AI助手
-def create_langchain_chain():
-    try:
-        # 确认API密钥是否已设置
-        if not OPENAI_API_KEY:
-            logger.warning("未设置API密钥(OPENAI_API_KEY)，无法使用LLM")
-            return None
-            
-        # API选择器 - 根据API_BASE判断使用哪种提供商
-        api_type = "openai"  # 默认为OpenAI
-        
-        # 检查是否使用Azure OpenAI
-        if "azure" in OPENAI_API_BASE.lower():
-            api_type = "azure"
-            logger.info("检测到Azure OpenAI API")
-            # 此处可添加Azure特定配置
-            
-        # 检查是否使用其他本地API (如LocalAI)
-        elif "localhost" in OPENAI_API_BASE.lower() or "127.0.0.1" in OPENAI_API_BASE:
-            api_type = "local"
-            logger.info("检测到本地API服务")
-        
-        # 创建基本LLM配置
-        llm_config = {
-            "temperature": 0.7,
-            "openai_api_key": OPENAI_API_KEY,
-            "openai_api_base": OPENAI_API_BASE,
-            "model_name": OPENAI_MODEL_NAME,
-            "request_timeout": API_TIMEOUT
-        }
-        
-        # 根据API类型调整配置
-        if api_type == "azure":
-            # Azure需要额外的配置参数
-            azure_deployment = os.environ.get("AZURE_DEPLOYMENT", OPENAI_MODEL_NAME)
-            llm_config.update({
-                "deployment_name": azure_deployment,
-                "openai_api_type": "azure",
-                "openai_api_version": os.environ.get("AZURE_API_VERSION", "2023-05-15")
-            })
-            logger.info(f"使用Azure部署: {azure_deployment}")
-        
-        # 创建LLM实例
-        # llm = OpenAI(**llm_config)  # 旧的实例化
-        llm = ChatOpenAI(**llm_config) # 新的实例化
-        
-        logger.info(f"已连接 {api_type} API, 模型: {OPENAI_MODEL_NAME}")
-        
-        # 创建提示模板
-        template = """你是AutoPipe智能助手，一个友好、专业的AI助手。
-        
-历史对话:
-{history}
+# create_langchain_chain, format_history, generate_ai_response_with_langchain 已被移除
 
-用户问题: {question}
-
-请用中文回答上述问题。你的回答应该友好、专业，并且尽量简洁明了。
-如果问题涉及到文件管理，请告诉用户AutoPipe提供了文件管理功能，每个对话都有自己独立的文件空间。
-如果问题涉及到编程，尽量提供有帮助的代码示例。
-如果你不知道答案，请诚实地说你不知道，而不是编造信息。
-
-你的回答:"""
-        
-        prompt = PromptTemplate.from_template(template)
-        
-        # 构建链
-        chain = (
-            {"history": lambda x: format_history(x["history"]), "question": lambda x: x["question"]}
-            | prompt
-            | llm
-            | StrOutputParser()
-        )
-        
-        return chain
-    except Exception as e:
-        logger.error(f"创建Langchain链失败: {str(e)}")
-        return None
-
-# 格式化对话历史为字符串
-def format_history(history):
-    if not history:
-        return "没有历史对话"
-    
-    formatted = []
-    for msg in history:
-        role = "AI" if msg["role"] == "assistant" else "用户"
-        formatted.append(f"{role}: {msg['content']}")
-    
-    return "\n".join(formatted)
-
-# 使用Langchain生成回复
-def generate_ai_response_with_langchain(conversation_id, message):
-    try:
-        # 获取对话历史
-        history = get_conversation_history(conversation_id)
-        
-        # 创建Langchain链
-        chain = create_langchain_chain()
-        
-        if chain:
-            # 生成回复
-            response = chain.invoke({"history": history, "question": message})
-            return response
-        else:
-            # 如果创建链失败
-            logger.warning("Langchain chain creation failed. Cannot generate AI response.")
-            return None
-    except Exception as e:
-        logger.error(f"Langchain failed to generate response: {str(e)}")
-        return None
-
-# 主AI回复函数（入口点）
-def generate_ai_response(conversation_id, message):
-    """使用Langchain生成AI回复。如果配置或环境问题导致无法使用，则返回错误信息。"""
-    if USE_FALLBACK_ONLY:
-        logger.warning(f"AI processing is disabled (USE_FALLBACK_ONLY=True). Not generating response for: {message[:30]}...")
-        return "AI processing is currently disabled by configuration."
-    
-    if not LANGCHAIN_AVAILABLE:
-        logger.warning(f"Langchain is unavailable. Cannot generate AI response for: {message[:30]}...")
-        return "Language model components are not available. Please check server setup."
-    
-    # 尝试使用Langchain
-    logger.info(f"Attempting to generate AI response using Langchain for: {message[:30]}...")
-    response = generate_ai_response_with_langchain(conversation_id, message)
-    
-    if response is None:
-        # This means generate_ai_response_with_langchain encountered an issue or chain creation failed
-        logger.error(f"Failed to get response from Langchain for: {message[:30]}...")
-        return "Error generating AI response. The language model may be unavailable or encountered an issue."
-        
-    return response
+# 主AI回复函数（入口点）- 现在返回固定值 -> 此函数将被 ConversationService.send_message 替代，可以移除
+# def generate_ai_response(conversation_id, message):
+#     logger.info(f"generate_ai_response called for: {message[:30]}... Returning fixed response.")
+#     return "Hello" # 直接返回 "Hello"
 
 # 对话管理API
 @app.route('/api/conversations', methods=['GET'])
 def get_conversations():
-    conversations = []
-    if os.path.exists(CONVERSATIONS_DIR):
-        for filename in os.listdir(CONVERSATIONS_DIR):
-            if filename.endswith('.json'):
-                with open(os.path.join(CONVERSATIONS_DIR, filename), 'r', encoding='utf-8') as f:
-                    conversation = json.load(f)
-                    conversations.append(conversation)
-    
-    # 按创建时间排序，最新的在前面
-    conversations.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+    # conversations = []
+    # if os.path.exists(CONVERSATIONS_DIR):
+    #     for filename in os.listdir(CONVERSATIONS_DIR):
+    #         if filename.endswith('.json'):
+    #             with open(os.path.join(CONVERSATIONS_DIR, filename), 'r', encoding='utf-8') as f:
+    #                 conversation = json.load(f)
+    #                 conversations.append(conversation)
+    # 
+    # # 按创建时间排序，最新的在前面
+    # conversations.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+    # return jsonify(conversations)
+    try:
+        conversations = conversation_service.get_all_conversations()
     return jsonify(conversations)
+    except Exception as e:
+        logger.error(f"Error in get_conversations: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/conversations', methods=['POST'])
 def create_conversation():
     data = request.json
-    title = data.get('title', f'新对话 {datetime.now().strftime("%Y-%m-%d %H:%M")}')
-    
-    conversation_id = f"conv{uuid.uuid4().hex[:8]}"
-    created_at = datetime.now().isoformat()
-    
-    # 创建一个新对话
-    conversation = {
-        'id': conversation_id,
-        'title': title,
-        'created_at': created_at,
-        'messages': [
-            {
-                'id': str(uuid.uuid4()),
-                'text': '欢迎使用AutoPipe聊天助手',
-                'sender': 'bot',
-                'isWelcome': True,
-                'timestamp': created_at
-            }
-        ]
-    }
-    
-    # 保存对话到文件
-    with open(os.path.join(CONVERSATIONS_DIR, f'{conversation_id}.json'), 'w', encoding='utf-8') as f:
-        json.dump(conversation, f, ensure_ascii=False, indent=2)
-    
-    # 为新对话创建专属文件目录
-    conversation_files_dir = get_conversation_files_dir(conversation_id)
-    
-    return jsonify(conversation)
+    title = data.get('title') # ConversationService 会处理默认标题
+    mode = data.get('mode', 'chat') # 从请求中获取 mode
+    # conversation_id = f"conv{uuid.uuid4().hex[:8]}"
+    # created_at = datetime.now().isoformat()
+    # 
+    # # 创建一个新对话
+    # conversation = {
+    #     'id': conversation_id,
+    #     'title': title,
+    #     'created_at': created_at,
+    #     'messages': [
+    #         {
+    #             'id': str(uuid.uuid4()),
+    #             'text': '欢迎使用AutoPipe聊天助手',
+    #             'sender': 'bot',
+    #             'isWelcome': True,
+    #             'timestamp': created_at
+    #         }
+    #     ]
+    # }
+    # 
+    # # 保存对话到文件
+    # with open(os.path.join(CONVERSATIONS_DIR, f'{conversation_id}.json'), 'w', encoding='utf-8') as f:
+    #     json.dump(conversation, f, ensure_ascii=False, indent=2)
+    # 
+    # # 为新对话创建专属文件目录
+    # conversation_files_dir = get_conversation_files_dir(conversation_id) # 文件目录创建与对话核心逻辑分离
+    # 
+    # return jsonify(conversation)
+    try:
+        conversation = conversation_service.create_conversation(title=title, mode=mode)
+        # 为新对话创建专属文件目录 (这部分是文件管理相关的，保留在API层，与核心对话服务分离)
+        get_conversation_files_dir(conversation['id'])
+        return jsonify(conversation)
+    except Exception as e:
+        logger.error(f"Error in create_conversation: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/conversations/<conversation_id>', methods=['GET'])
 def get_conversation(conversation_id):
-    file_path = os.path.join(CONVERSATIONS_DIR, f'{conversation_id}.json')
-    if not os.path.exists(file_path):
+    # file_path = os.path.join(CONVERSATIONS_DIR, f'{conversation_id}.json')
+    # if not os.path.exists(file_path):
+    #     return jsonify({'error': '对话不存在'}), 404
+    # 
+    # with open(file_path, 'r', encoding='utf-8') as f:
+    #     conversation = json.load(f)
+    # 
+    # return jsonify(conversation)
+    try:
+        conversation = conversation_service.get_conversation(conversation_id)
+        return jsonify(conversation)
+    except FileNotFoundError:
         return jsonify({'error': '对话不存在'}), 404
-    
-    with open(file_path, 'r', encoding='utf-8') as f:
-        conversation = json.load(f)
-    
-    return jsonify(conversation)
+    except Exception as e:
+        logger.error(f"Error in get_conversation: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/conversations/<conversation_id>', methods=['DELETE'])
 def delete_conversation(conversation_id):
-    file_path = os.path.join(CONVERSATIONS_DIR, f'{conversation_id}.json')
-    if not os.path.exists(file_path):
+    # file_path = os.path.join(CONVERSATIONS_DIR, f'{conversation_id}.json')
+    # if not os.path.exists(file_path):
+    #     return jsonify({'error': '对话不存在'}), 404
+    # 
+    # os.remove(file_path)
+    # return jsonify({'success': True, 'message': '对话已删除'})
+    try:
+        if conversation_service.delete_conversation(conversation_id):
+            # 删除关联的文件目录
+            conv_files_dir = os.path.join(FILES_DIR, conversation_id)
+            if os.path.exists(conv_files_dir):
+                shutil.rmtree(conv_files_dir)
+            return jsonify({'success': True, 'message': '对话已删除'})
+        else:
         return jsonify({'error': '对话不存在'}), 404
-    
-    os.remove(file_path)
-    return jsonify({'success': True, 'message': '对话已删除'})
+    except Exception as e:
+        logger.error(f"Error in delete_conversation: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/conversations/<conversation_id>/rename', methods=['PUT'])
 def rename_conversation(conversation_id):
@@ -305,83 +191,129 @@ def rename_conversation(conversation_id):
     if not new_title:
         return jsonify({'error': '标题不能为空'}), 400
     
-    file_path = os.path.join(CONVERSATIONS_DIR, f'{conversation_id}.json')
-    if not os.path.exists(file_path):
+    # file_path = os.path.join(CONVERSATIONS_DIR, f'{conversation_id}.json')
+    # if not os.path.exists(file_path):
+    #     return jsonify({'error': '对话不存在'}), 404
+    # 
+    # with open(file_path, 'r', encoding='utf-8') as f:
+    #     conversation = json.load(f)
+    # 
+    # conversation['title'] = new_title
+    # 
+    # with open(file_path, 'w', encoding='utf-8') as f:
+    #     json.dump(conversation, f, ensure_ascii=False, indent=2)
+    # 
+    # return jsonify(conversation)
+    try:
+        conversation = conversation_service.rename_conversation(conversation_id, new_title)
+        return jsonify(conversation)
+    except FileNotFoundError:
         return jsonify({'error': '对话不存在'}), 404
-    
-    with open(file_path, 'r', encoding='utf-8') as f:
-        conversation = json.load(f)
-    
-    conversation['title'] = new_title
-    
-    with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(conversation, f, ensure_ascii=False, indent=2)
-    
-    return jsonify(conversation)
+    except Exception as e:
+        logger.error(f"Error in rename_conversation: {e}")
+        return jsonify({"error": str(e)}), 500
 
 # 消息管理API
 @app.route('/api/conversations/<conversation_id>/messages', methods=['GET'])
 def get_messages(conversation_id):
-    file_path = os.path.join(CONVERSATIONS_DIR, f'{conversation_id}.json')
-    if not os.path.exists(file_path):
+    # file_path = os.path.join(CONVERSATIONS_DIR, f'{conversation_id}.json')
+    # if not os.path.exists(file_path):
+    #     return jsonify({'error': '对话不存在'}), 404
+    # 
+    # with open(file_path, 'r', encoding='utf-8') as f:
+    #     conversation = json.load(f)
+    # 
+    # return jsonify(conversation['messages'])
+    try:
+        messages = conversation_service.get_messages(conversation_id)
+        return jsonify(messages)
+    except FileNotFoundError:
         return jsonify({'error': '对话不存在'}), 404
-    
-    with open(file_path, 'r', encoding='utf-8') as f:
-        conversation = json.load(f)
-    
-    return jsonify(conversation['messages'])
+    except Exception as e:
+        logger.error(f"Error in get_messages: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/conversations/<conversation_id>/messages', methods=['POST'])
 def send_message(conversation_id):
     data = request.json
-    user_message = data.get('message', '')
+    user_message_text = data.get('message', '') # Renamed for clarity
     
-    if not user_message.strip():
+    if not user_message_text.strip():
         return jsonify({'error': '消息不能为空'}), 400
     
-    file_path = os.path.join(CONVERSATIONS_DIR, f'{conversation_id}.json')
-    if not os.path.exists(file_path):
+    # file_path = os.path.join(CONVERSATIONS_DIR, f'{conversation_id}.json')
+    # if not os.path.exists(file_path):
+    #     return jsonify({'error': '对话不存在'}), 404
+    # 
+    # with open(file_path, 'r', encoding='utf-8') as f:
+    #     conversation = json.load(f)
+    # 
+    # # 添加用户消息
+    # message_id = str(uuid.uuid4())
+    # timestamp = datetime.now().isoformat()
+    # 
+    # user_message_obj = {
+    #     'id': message_id,
+    #     'text': user_message,
+    #     'sender': 'user',
+    #     'timestamp': timestamp
+    # }
+    # 
+    # conversation['messages'].append(user_message_obj)
+    # 
+    # # 生成AI回复
+    # ai_response = generate_ai_response(conversation_id, user_message)
+    # 
+    # ai_message_id = str(uuid.uuid4())
+    # ai_message_obj = {
+    #     'id': ai_message_id,
+    #     'text': ai_response,
+    #     'sender': 'bot',
+    #     'timestamp': datetime.now().isoformat()
+    # }
+    # 
+    # conversation['messages'].append(ai_message_obj)
+    # 
+    # # 保存更新后的对话
+    # with open(file_path, 'w', encoding='utf-8') as f:
+    #     json.dump(conversation, f, ensure_ascii=False, indent=2)
+    # 
+    # return jsonify({
+    #     'user_message': user_message_obj,
+    #     'ai_message': ai_message_obj
+    # })
+    try:
+        # ConversationService.send_message now handles adding user message,
+        # generating AI response, and saving the conversation.
+        # It returns a dict with 'user_message' and 'ai_message'
+        response_data = conversation_service.send_message(conversation_id, user_message_text)
+        return jsonify(response_data)
+    except FileNotFoundError:
         return jsonify({'error': '对话不存在'}), 404
-    
-    with open(file_path, 'r', encoding='utf-8') as f:
-        conversation = json.load(f)
-    
-    # 添加用户消息
-    message_id = str(uuid.uuid4())
-    timestamp = datetime.now().isoformat()
-    
-    user_message_obj = {
-        'id': message_id,
-        'text': user_message,
-        'sender': 'user',
-        'timestamp': timestamp
-    }
-    
-    conversation['messages'].append(user_message_obj)
-    
-    # 生成AI回复
-    ai_response = generate_ai_response(conversation_id, user_message)
-    
-    ai_message_id = str(uuid.uuid4())
-    ai_message_obj = {
-        'id': ai_message_id,
-        'text': ai_response,
-        'sender': 'bot',
-        'timestamp': datetime.now().isoformat()
-    }
-    
-    conversation['messages'].append(ai_message_obj)
-    
-    # 保存更新后的对话
-    with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(conversation, f, ensure_ascii=False, indent=2)
-    
-    return jsonify({
-        'user_message': user_message_obj,
-        'ai_message': ai_message_obj
-    })
+    except Exception as e:
+        logger.error(f"Error sending message: {e}")
+        return jsonify({'error': str(e)}), 500
 
-# 文件管理API
+@app.route('/api/conversations/<conversation_id>/mode', methods=['PUT'])
+def set_conversation_mode_route(conversation_id):
+    data = request.json
+    mode = data.get('mode')
+
+    if not mode or mode not in ['chat', 'agent']:
+        return jsonify({'error': '无效的模式，必须是 "chat" 或 "agent"'}), 400
+
+    try:
+        updated_conversation = conversation_service.set_conversation_mode(conversation_id, mode)
+        return jsonify(updated_conversation)
+    except FileNotFoundError:
+        return jsonify({'error': '对话不存在'}), 404
+    except ValueError as ve:
+        return jsonify({'error': str(ve)}), 400
+    except Exception as e:
+        logger.error(f"Error setting conversation mode: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# 文件管理API (这部分保持不变，因为它们与对话服务核心逻辑分离)
 @app.route('/api/files', methods=['GET'])
 def list_files():
     conversation_id = request.args.get('conversation_id')
@@ -693,4 +625,4 @@ def create_directory():
     return jsonify(folder_info)
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=DEBUG, host='0.0.0.0', port=5000)

@@ -8,6 +8,7 @@ import os
 USE_FALLBACK_ONLY = os.environ.get('USE_FALLBACK_ONLY', 'False').lower() in ('true', '1', 'yes')
 
 # OpenAI API密钥（当USE_FALLBACK_ONLY为False时需要）
+# 警告：这是一个占位符密钥，您必须在环境变量中提供自己的有效API密钥才能连接到LLM。
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', 'sk-27e47833a9d14961b25c9c2a1c7a7d68')
 
 # OpenAI兼容API的基础URL

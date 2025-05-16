@@ -238,6 +238,9 @@ export const workflowsApi = {
     goal
   }),
   
+  // 更新工作流
+  updateWorkflow: (workflowId, workflowData) => apiClient.put(`/workflows/${workflowId}`, workflowData),
+  
   // 执行工作流步骤
   executeStep: (workflowId, stepId, conversationId) => 
     apiClient.post(`/workflows/${workflowId}/steps/${stepId}/execute`, {

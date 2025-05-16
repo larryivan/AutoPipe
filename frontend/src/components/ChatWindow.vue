@@ -65,6 +65,24 @@ const handleToggleMode = () => {
 const regularMessages = computed(() => props.messages.filter((m) => !m.isWelcome));
 
 const welcomeMessage = computed(() => props.messages.find((m) => m.isWelcome));
+
+// 处理AI修改Pipeline请求
+const handleRequestAIModification = (workflow: any) => {
+  if (!workflow) return;
+  
+  // 准备AI修改提示文本
+  newMessage.value = `请帮我修改当前Pipeline方案"${workflow.title}"，我希望改进它的`;
+  
+  // 聚焦输入框
+  setTimeout(() => {
+    const inputEl = document.querySelector('input[v-model="newMessage"]');
+    if (inputEl instanceof HTMLInputElement) {
+      inputEl.focus();
+      // 将光标放在文本末尾
+      inputEl.selectionStart = inputEl.selectionEnd = newMessage.value.length;
+    }
+  }, 100);
+};
 </script>
 
 <template>
@@ -190,6 +208,7 @@ const welcomeMessage = computed(() => props.messages.find((m) => m.isWelcome));
                 "
                 :conversationId="currentConversationId"
                 :workflowId="message.workflow_id"
+                @request-ai-modification="handleRequestAIModification"
               />
             </div>
           </div>
